@@ -1,0 +1,53 @@
+services:
+  vodlink:
+    # Local build (default). To use a pre-built image from GitHub Packages instead:
+    #   comment out the 'build' block and uncomment the 'image' line below.
+    # image: ghcr.io/jdfrey1/vodlink:latest
+    build:
+      context: .
+      args:
+        - VERSION=${VODLINK_VERSION:-dev}
+    container_name: vodlink
+    ports:
+      - "${VODLINK_PORT:-7842}:8000"
+    volumes:
+      # Source paths are mirrored exactly (host path == container path) so that
+      # symlinks VodLink creates inside the container resolve on the host too.
+      - ${MOVIES_SRC}:${MOVIES_SRC}:ro
+      - ${SERIES_SRC}:${SERIES_SRC}:ro
+      - ${MOVIES_DEST}:${MOVIES_DEST}:rw
+      - ${SERIES_DEST}:${SERIES_DEST}:rw
+      - ${DATA_DIR:-/volume1/docker/vodlink/data}:/app/data:rw
+    environment:
+      - MOVIES_SRC=${MOVIES_SRC}
+      - SERIES_SRC=${SERIES_SRC}
+      - MOVIES_DEST=${MOVIES_DEST}
+      - SERIES_DEST=${SERIES_DEST}
+      - DB_PATH=/app/data/vodlink.db
+    restart: unless-stopped
+
+  dispatcharr-proxy:
+    # Nginx reverse proxy that bridges the host network to Dispatcharr running
+    # on a Docker macvlan. Remove this service if you don't need it.
+    image: nginx:alpine
+    container_name: dispatcharr-proxy
+    ports:
+      - "${PROXY_PORT:-9191}:${PROXY_PORT:-9191}"
+    volumes:
+      - ./nginx-proxy.conf:/etc/nginx/nginx.conf.template:ro
+    environment:
+      - DISPATCHARR_IP=${DISPATCHARR_IP:-192.168.40.80}
+      - DISPATCHARR_PORT=${DISPATCHARR_PORT:-9191}
+      - PROXY_PORT=${PROXY_PORT:-9191}
+    command: >
+      /bin/sh -c "envsubst '$$DISPATCHARR_IP $$DISPATCHARR_PORT $$PROXY_PORT'
+      < /etc/nginx/nginx.conf.template
+      > /tmp/nginx.conf && exec nginx -c /tmp/nginx.conf -g 'daemon off;'"
+    networks:
+      - default
+      - vpn-macvlan
+    restart: unless-stopped
+
+networks:
+  vpn-macvlan:
+    external: true

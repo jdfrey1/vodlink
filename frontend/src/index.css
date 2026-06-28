@@ -1,0 +1,32 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  /* Light theme (default) */
+  :root {
+    --c-bg:        249 250 251;
+    --c-surface:   255 255 255;
+    --c-raised:    243 244 246;
+    --c-elevated:  229 231 235;
+    --c-high:      209 213 219;
+    --c-border:    229 231 235;
+    --c-fg:        17  24  39;
+    --c-secondary: 55  65  81;
+    --c-muted:     107 114 128;
+    --c-subtle:    156 163 175;
+  }
+
+  .dark {
+    --c-bg:        3   7   18;
+    --c-surface:   17  24  39;
+    --c-raised:    31  41  55;
+    --c-elevated:  55  65  81;
+    --c-high:      75  85  99;
+    --c-border:    55  65  81;
+    --c-fg:        255 255 255;
+    --c-secondary: 209 213 219;
+    --c-muted:     156 163 175;
+    --c-subtle:    107 114 128;
+  }
+}

@@ -1,0 +1,36 @@
+# Environment — copy .env.example to .env and fill in your values
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# Node
+node_modules/
+frontend/dist/
+
+# Data — never commit the live database or backups
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Source assets (processed versions are in frontend/public/)
+vodlink icon.png
+
+# Synology NAS metadata
+@eaDir/
+
+# CodeGraph index (auto-generated)
+.codegraph/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
