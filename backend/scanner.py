@@ -4,9 +4,8 @@ import threading
 import xml.etree.ElementTree as ET
 import database as db
 
-_VOD_SRC = os.getenv("VOD_SRC", "/vod/src")
-MOVIES_SRC = os.path.join(_VOD_SRC, "Movies")
-SERIES_SRC = os.path.join(_VOD_SRC, "Series")
+MOVIES_SRC = "/vod/src/Movies"
+SERIES_SRC = "/vod/src/Series"
 
 scan_state: dict = {
     "running": False,

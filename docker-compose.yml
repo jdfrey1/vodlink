@@ -15,7 +15,4 @@ services:
       - ${VOD_SRC}:/vod/src:ro
       - ${VOD_DEST}:/vod/dest:rw
       - ${DATA_DIR:-/volume1/docker/vodlink/data}:/app/data:rw
-    environment:
-      - VOD_SRC=/vod/src
-      - VOD_DEST=/vod/dest
     restart: unless-stopped

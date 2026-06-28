@@ -16,9 +16,8 @@ import schedule_manager
 import backup as bk
 
 APP_VERSION = os.getenv("APP_VERSION", "dev").lstrip("v")
-_VOD_DEST = os.getenv("VOD_DEST", "/vod/dest")
-MOVIES_DEST = os.path.join(_VOD_DEST, "Movies")
-SERIES_DEST = os.path.join(_VOD_DEST, "Series")
+MOVIES_DEST = "/vod/dest/Movies"
+SERIES_DEST = "/vod/dest/Series"
 
 # Cache Dispatcharr session URLs from HEAD probes so GET redirects can use the
 # same session URL, avoiding the extra redirect hop and a new 301 from Dispatcharr.
