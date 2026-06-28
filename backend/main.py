@@ -1,18 +1,31 @@
 import os
+import re
+import shutil
+import time
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, UploadFile, File
+
+import httpx
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
 from pydantic import BaseModel
+
 import database as db
 import scanner
 import schedule_manager
 import backup as bk
 
 APP_VERSION = os.getenv("APP_VERSION", "dev")
-
 MOVIES_DEST = os.getenv("MOVIES_DEST", "/volume1/SSD/VOD/Movies")
 SERIES_DEST = os.getenv("SERIES_DEST", "/volume1/SSD/VOD/Series")
+# URL Emby uses to reach VodLink — written into proxy .strm files
+VODLINK_BASE_URL = os.getenv("VODLINK_BASE_URL", "").rstrip("/")
+
+# Cache Dispatcharr session URLs from HEAD probes so GET redirects can use the
+# same session URL, avoiding the extra redirect hop and a new 301 from Dispatcharr.
+# key = "movie:TMDB_ID" or "series:TMDB_ID", value = (session_url, expires_at)
+_session_cache: dict[str, tuple[str, float]] = {}
+_SESSION_TTL = 3600.0  # 1 hour
 
 
 @asynccontextmanager
@@ -20,7 +33,6 @@ async def lifespan(app: FastAPI):
     db.init_db()
     schedule_manager.init()
     bk.init()
-    # Auto-trigger full scan for any type with no data in DB
     movies_count = db.count_by_type("movie")
     series_count = db.count_by_type("series")
     if movies_count == 0 and series_count == 0:
@@ -40,17 +52,56 @@ def _dest_path(media_type: str, dir_name: str) -> str:
     return os.path.join(base, dir_name)
 
 
+def _is_linked(dp: str) -> bool:
+    """True if dest path exists — either symlink (series) or real dir (movie proxy)."""
+    return os.path.exists(dp) or os.path.islink(dp)
+
+
 def _enrich(item: dict, media_type: str) -> dict:
     dp = _dest_path(media_type, item["dir_name"])
-    return {**item, "linked": os.path.islink(dp)}
+    return {**item, "linked": _is_linked(dp)}
 
 
 def _linked_dir_names(media_type: str) -> list[str]:
     dest = MOVIES_DEST if media_type == "movie" else SERIES_DEST
     try:
-        return [d for d in os.listdir(dest) if os.path.islink(os.path.join(dest, d))]
+        return [d for d in os.listdir(dest)
+                if _is_linked(os.path.join(dest, d))]
     except OSError:
         return []
+
+
+def _find_strm_url(src_dir: str) -> str | None:
+    """Read the Dispatcharr URL from the .strm file in the source directory."""
+    try:
+        for f in os.listdir(src_dir):
+            if f.endswith(".strm"):
+                content = open(os.path.join(src_dir, f)).read().strip()
+                if content.startswith("http"):
+                    return content
+    except OSError:
+        pass
+    return None
+
+
+def _find_nfo_files(src_dir: str) -> list[str]:
+    """Top-level .nfo files (not episode nfos which start with a digit)."""
+    try:
+        return [f for f in os.listdir(src_dir)
+                if f.endswith(".nfo") and not f[0].isdigit()]
+    except OSError:
+        return []
+
+
+def _strm_filename(src_dir: str, dir_name: str) -> str:
+    """Return the .strm filename from the source dir, or fall back to dir_name."""
+    try:
+        for f in os.listdir(src_dir):
+            if f.endswith(".strm"):
+                return f
+    except OSError:
+        pass
+    return dir_name + ".strm"
 
 
 # --- Version ---
@@ -58,6 +109,99 @@ def _linked_dir_names(media_type: str) -> list[str]:
 @app.get("/api/version")
 def get_version():
     return {"version": APP_VERSION}
+
+
+# --- Stream endpoint ---
+
+_STREAM_TIMEOUT = httpx.Timeout(connect=10.0, read=300.0, write=10.0, pool=5.0)
+# No keepalive — connections close after each request so Dispatcharr sees a clean
+# disconnect rather than an idle connection sitting in a pool.
+_NO_KEEPALIVE = httpx.Limits(max_keepalive_connections=0, max_connections=20)
+
+
+@app.api_route("/stream/{media_type}/{tmdb_id}", methods=["GET", "HEAD"])
+async def stream_media(media_type: str, tmdb_id: str, request: Request):
+    item = db.get_by_tmdb(media_type, tmdb_id)
+    if not item:
+        raise HTTPException(404, "Not found")
+
+    dispatcharr_url = _find_strm_url(item["source_path"])
+    if not dispatcharr_url:
+        raise HTTPException(503, "No stream URL found in source")
+
+    fwd_headers = {k: v for k, v in request.headers.items()
+                   if k.lower() not in ("host", "connection", "transfer-encoding")}
+
+    cache_key = f"{media_type}:{tmdb_id}"
+    now = time.monotonic()
+    cached = _session_cache.get(cache_key)
+    session_url = cached[0] if (cached and cached[1] > now) else None
+
+    # One-shot client — no keepalive pool, TCP closes after each response.
+    client = httpx.AsyncClient(timeout=_STREAM_TIMEOUT, limits=_NO_KEEPALIVE,
+                               follow_redirects=(session_url is None))
+    target = session_url or dispatcharr_url
+
+    if request.method == "HEAD":
+        # Dispatcharr returns 405 for HEAD — use GET Range:0-0 to get headers.
+        try:
+            req = client.build_request("GET", target, headers={"range": "bytes=0-0"})
+            resp = await client.send(req, stream=True)
+            if session_url is None:
+                landed = str(resp.url)
+                if landed != dispatcharr_url:
+                    _session_cache[cache_key] = (landed, now + _SESSION_TTL)
+            probe_headers = dict(resp.headers)
+            await resp.aclose()
+        finally:
+            await client.aclose()
+
+        headers: dict[str, str] = {}
+        for h in ("content-type", "accept-ranges", "last-modified", "etag"):
+            if h in probe_headers:
+                headers[h] = probe_headers[h]
+        cr = probe_headers.get("content-range", "")
+        m = re.search(r"/(\d+)$", cr)
+        if m:
+            headers["content-length"] = m.group(1)
+        return Response(status_code=200, headers=headers)
+
+    # GET: proxy the stream through VodLink so Emby uses a stable URL for
+    # all Range/seek requests (Emby does not cache redirect targets).
+    try:
+        req = client.build_request("GET", target, headers=fwd_headers)
+        resp = await client.send(req, stream=True)
+
+        # Cache the session URL we landed on after Dispatcharr's 301 redirect.
+        if session_url is None:
+            landed = str(resp.url)
+            if landed != dispatcharr_url:
+                _session_cache[cache_key] = (landed, now + _SESSION_TTL)
+
+        # Session may have expired — clear cache and let Emby retry.
+        if resp.status_code not in (200, 206):
+            if session_url is not None:
+                _session_cache.pop(cache_key, None)
+            await resp.aclose()
+            await client.aclose()
+            raise HTTPException(resp.status_code, "Upstream error")
+
+        resp_headers = {k: v for k, v in resp.headers.items()
+                        if k.lower() not in ("transfer-encoding", "connection")}
+
+        async def body_gen():
+            try:
+                async for chunk in resp.aiter_bytes(chunk_size=524288):  # 512 KB
+                    yield chunk
+            finally:
+                await resp.aclose()
+                await client.aclose()
+
+        return StreamingResponse(body_gen(), status_code=resp.status_code,
+                                 headers=resp_headers)
+    except Exception:
+        await client.aclose()
+        raise
 
 
 # --- List / search ---
@@ -110,21 +254,49 @@ def list_series(
     }
 
 
-# --- Link / unlink movies ---
+# --- Link / unlink movies (proxy .strm approach) ---
+
+def _link_movie_item(item: dict) -> dict:
+    if not VODLINK_BASE_URL:
+        raise HTTPException(503, "VODLINK_BASE_URL not configured — set it in .env")
+    dest_dir = _dest_path("movie", item["dir_name"])
+    if _is_linked(dest_dir):
+        return {"linked": True, "message": "Already linked"}
+    src_dir = item["source_path"]
+    try:
+        os.makedirs(dest_dir)
+        # Write proxy .strm pointing to VodLink's stream endpoint
+        strm_name = _strm_filename(src_dir, item["dir_name"])
+        proxy_url = f"{VODLINK_BASE_URL}/stream/movie/{item['tmdb_id']}"
+        with open(os.path.join(dest_dir, strm_name), "w") as f:
+            f.write(proxy_url)
+        # Symlink .nfo files so Emby has metadata
+        for nfo in _find_nfo_files(src_dir):
+            os.symlink(os.path.join(src_dir, nfo), os.path.join(dest_dir, nfo))
+    except OSError as e:
+        raise HTTPException(500, str(e))
+    return {"linked": True}
+
+
+def _unlink_item(dest_dir: str) -> dict:
+    try:
+        if os.path.islink(dest_dir):
+            os.unlink(dest_dir)
+        elif os.path.isdir(dest_dir):
+            shutil.rmtree(dest_dir)
+        else:
+            return {"linked": False, "message": "Not linked"}
+    except OSError as e:
+        raise HTTPException(500, str(e))
+    return {"linked": False}
+
 
 @app.post("/api/movies/{tmdb_id}/link")
 def link_movie(tmdb_id: str):
     item = db.get_by_tmdb("movie", tmdb_id)
     if not item:
         raise HTTPException(404, "Movie not found")
-    dp = _dest_path("movie", item["dir_name"])
-    if os.path.islink(dp):
-        return {"linked": True, "message": "Already linked"}
-    try:
-        os.symlink(item["source_path"], dp)
-    except OSError as e:
-        raise HTTPException(500, str(e))
-    return {"linked": True}
+    return _link_movie_item(item)
 
 
 @app.delete("/api/movies/{tmdb_id}/link")
@@ -132,17 +304,10 @@ def unlink_movie(tmdb_id: str):
     item = db.get_by_tmdb("movie", tmdb_id)
     if not item:
         raise HTTPException(404, "Movie not found")
-    dp = _dest_path("movie", item["dir_name"])
-    if not os.path.islink(dp):
-        return {"linked": False, "message": "Not linked"}
-    try:
-        os.unlink(dp)
-    except OSError as e:
-        raise HTTPException(500, str(e))
-    return {"linked": False}
+    return _unlink_item(_dest_path("movie", item["dir_name"]))
 
 
-# --- Link / unlink series ---
+# --- Link / unlink series (directory symlink — episode URLs need future work) ---
 
 @app.post("/api/series/{tmdb_id}/link")
 def link_series(tmdb_id: str):
@@ -150,7 +315,7 @@ def link_series(tmdb_id: str):
     if not item:
         raise HTTPException(404, "Series not found")
     dp = _dest_path("series", item["dir_name"])
-    if os.path.islink(dp):
+    if _is_linked(dp):
         return {"linked": True, "message": "Already linked"}
     try:
         os.symlink(item["source_path"], dp)
@@ -164,14 +329,7 @@ def unlink_series(tmdb_id: str):
     item = db.get_by_tmdb("series", tmdb_id)
     if not item:
         raise HTTPException(404, "Series not found")
-    dp = _dest_path("series", item["dir_name"])
-    if not os.path.islink(dp):
-        return {"linked": False, "message": "Not linked"}
-    try:
-        os.unlink(dp)
-    except OSError as e:
-        raise HTTPException(500, str(e))
-    return {"linked": False}
+    return _unlink_item(_dest_path("series", item["dir_name"]))
 
 
 # --- Sync check ---
@@ -185,17 +343,27 @@ def _check_dest(media_type: str, dest: str) -> list[dict]:
     for name in entries:
         path = os.path.join(dest, name)
         is_link = os.path.islink(path)
+        is_dir = os.path.isdir(path)
         target = os.readlink(path) if is_link else None
         db_item = db.get_by_dir_name(media_type, name)
 
-        if not is_link:
-            issues.append({"dir_name": name, "issue": "real_dir", "target": None, "expected": db_item["source_path"] if db_item else None})
-        elif not os.path.exists(path):
-            issues.append({"dir_name": name, "issue": "broken_symlink", "target": target, "expected": db_item["source_path"] if db_item else None})
-        elif not db_item:
-            issues.append({"dir_name": name, "issue": "orphaned", "target": target, "expected": None})
-        elif target != db_item["source_path"]:
-            issues.append({"dir_name": name, "issue": "wrong_target", "target": target, "expected": db_item["source_path"]})
+        if is_link:
+            if not os.path.exists(path):
+                issues.append({"dir_name": name, "issue": "broken_symlink", "target": target,
+                                "expected": db_item["source_path"] if db_item else None})
+            elif not db_item:
+                issues.append({"dir_name": name, "issue": "orphaned", "target": target, "expected": None})
+            elif target != db_item["source_path"]:
+                issues.append({"dir_name": name, "issue": "wrong_target", "target": target,
+                                "expected": db_item["source_path"]})
+        elif is_dir:
+            # Real directory — check if it's a VodLink-managed proxy dir
+            if not db_item:
+                issues.append({"dir_name": name, "issue": "orphaned", "target": None, "expected": None})
+            # If it's in DB it's ours (VodLink created it) — no issue
+        else:
+            issues.append({"dir_name": name, "issue": "real_dir", "target": None,
+                           "expected": db_item["source_path"] if db_item else None})
     return issues
 
 
@@ -213,11 +381,12 @@ def sync_fix():
     errors = []
     for media_type, dest in [("movie", MOVIES_DEST), ("series", SERIES_DEST)]:
         for issue in _check_dest(media_type, dest):
-            if issue["issue"] == "real_dir":
-                continue  # never auto-delete real directories
             path = os.path.join(dest, issue["dir_name"])
             try:
-                os.unlink(path)
+                if os.path.islink(path):
+                    os.unlink(path)
+                elif os.path.isdir(path):
+                    shutil.rmtree(path)
                 removed.append({"dir_name": issue["dir_name"], "type": media_type, "reason": issue["issue"]})
             except OSError as e:
                 errors.append({"dir_name": issue["dir_name"], "error": str(e)})
@@ -341,5 +510,4 @@ def delete_backup(filename: str):
 
 
 # --- Serve React frontend ---
-# html=True makes StaticFiles return index.html for unknown paths (SPA routing)
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
