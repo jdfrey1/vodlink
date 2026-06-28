@@ -37,12 +37,12 @@ export default function ScanStatus({ status, version, onScan, onSyncCheck, onSch
       {open && (
         <>
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 mt-2 w-56 bg-raised border border-border rounded-lg shadow-2xl z-20">
+          <div className="absolute right-0 mt-2 w-72 bg-raised border border-border rounded-lg shadow-2xl z-20">
             <div className="p-3 text-xs text-muted border-b border-border space-y-0.5">
               <div>Movies: {status.movie_count?.toLocaleString() ?? '—'}</div>
               <div>Series: {status.series_count?.toLocaleString() ?? '—'}</div>
-              <div className="pt-1 text-subtle">Last movie scan: {fmt(status.last_scan_movies)}</div>
-              <div className="text-subtle">Last series scan: {fmt(status.last_scan_series)}</div>
+              <div className="pt-1 text-subtle whitespace-nowrap">Last movie scan: {fmt(status.last_scan_movies)}</div>
+              <div className="text-subtle whitespace-nowrap">Last series scan: {fmt(status.last_scan_series)}</div>
               {version && <div className="pt-1 text-subtle/60">v{version}</div>}
             </div>
             <div className="p-1">

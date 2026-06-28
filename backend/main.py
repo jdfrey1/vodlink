@@ -15,7 +15,7 @@ import scanner
 import schedule_manager
 import backup as bk
 
-APP_VERSION = os.getenv("APP_VERSION", "dev")
+APP_VERSION = os.getenv("APP_VERSION", "dev").lstrip("v")
 _VOD_DEST = os.getenv("VOD_DEST", "/vod/dest")
 MOVIES_DEST = os.path.join(_VOD_DEST, "Movies")
 SERIES_DEST = os.path.join(_VOD_DEST, "Series")
