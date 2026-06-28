@@ -25,5 +25,4 @@ services:
       - MOVIES_DEST=${MOVIES_DEST}
       - SERIES_DEST=${SERIES_DEST}
       - DB_PATH=/app/data/vodlink.db
-      - VODLINK_BASE_URL=${VODLINK_BASE_URL}
     restart: unless-stopped

@@ -19,7 +19,6 @@ APP_VERSION = os.getenv("APP_VERSION", "dev")
 MOVIES_DEST = os.getenv("MOVIES_DEST", "/volume1/SSD/VOD/Movies")
 SERIES_DEST = os.getenv("SERIES_DEST", "/volume1/SSD/VOD/Series")
 # URL Emby uses to reach VodLink — written into proxy .strm files
-VODLINK_BASE_URL = os.getenv("VODLINK_BASE_URL", "").rstrip("/")
 
 # Cache Dispatcharr session URLs from HEAD probes so GET redirects can use the
 # same session URL, avoiding the extra redirect hop and a new 301 from Dispatcharr.
@@ -256,18 +255,15 @@ def list_series(
 
 # --- Link / unlink movies (proxy .strm approach) ---
 
-def _link_movie_item(item: dict) -> dict:
-    if not VODLINK_BASE_URL:
-        raise HTTPException(503, "VODLINK_BASE_URL not configured — set it in .env")
+def _link_movie_item(item: dict, base_url: str) -> dict:
     dest_dir = _dest_path("movie", item["dir_name"])
     if _is_linked(dest_dir):
         return {"linked": True, "message": "Already linked"}
     src_dir = item["source_path"]
     try:
         os.makedirs(dest_dir)
-        # Write proxy .strm pointing to VodLink's stream endpoint
         strm_name = _strm_filename(src_dir, item["dir_name"])
-        proxy_url = f"{VODLINK_BASE_URL}/stream/movie/{item['tmdb_id']}"
+        proxy_url = f"{base_url}/stream/movie/{item['tmdb_id']}"
         with open(os.path.join(dest_dir, strm_name), "w") as f:
             f.write(proxy_url)
         # Symlink .nfo files so Emby has metadata
@@ -292,11 +288,13 @@ def _unlink_item(dest_dir: str) -> dict:
 
 
 @app.post("/api/movies/{tmdb_id}/link")
-def link_movie(tmdb_id: str):
+def link_movie(tmdb_id: str, request: Request):
     item = db.get_by_tmdb("movie", tmdb_id)
     if not item:
         raise HTTPException(404, "Movie not found")
-    return _link_movie_item(item)
+    scheme = request.headers.get("x-forwarded-proto", "http")
+    host = request.headers.get("host", "")
+    return _link_movie_item(item, f"{scheme}://{host}")
 
 
 @app.delete("/api/movies/{tmdb_id}/link")
