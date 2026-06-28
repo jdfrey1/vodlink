@@ -18,5 +18,4 @@ services:
     environment:
       - VOD_SRC=/vod/src
       - VOD_DEST=/vod/dest
-      - DB_PATH=/app/data/vodlink.db
     restart: unless-stopped
