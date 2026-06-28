@@ -1,8 +1,8 @@
 # VodLink
 
-Browse and link IPTV VOD content from [Dispatcharr](https://github.com/Dispatcharr/Dispatcharr) into your [Emby](https://emby.media) library.
+Browse and link IPTV VOD content from [Dispatcharr](https://github.com/Dispatcharr/Dispatcharr) into [Emby](https://emby.media).
 
-VodLink is the glue between the [VOD2MLIB](https://github.com/R3XCHRIS/VOD2MLIB) Dispatcharr plugin and Emby. VOD2MLIB generates `.strm` and `.nfo` files from your IPTV VOD catalog inside Dispatcharr. VodLink reads those files, lets you browse and selectively link movies and series into your Emby library, and runs a stream proxy so that Emby's seeking, resume, and scanning all work correctly with Dispatcharr's redirect-based streaming.
+VodLink bridges [VOD2MLIB](https://github.com/R3XCHRIS/VOD2MLIB) and Emby. VOD2MLIB generates `.strm` + `.nfo` files from IPTV VOD catalog inside Dispatcharr. VodLink reads those files, lets you browse and link movies/series into Emby library, and runs a stream proxy so seeking, resume, and scanning work correctly with Dispatcharr's redirect-based streaming.
 
 ---
 
@@ -30,21 +30,21 @@ Dispatcharr + VOD2MLIB plugin
 
 ## Features
 
-- Browse and search movies and series from VOD2MLIB source directories
+- Browse and search movies/series from VOD2MLIB source directories
 - One-click link/unlink to Emby library directories
-- Stream proxy: converts Emby's `HEAD` requests to `GET`, caches Dispatcharr session URLs so seeking and resume work
-- Scheduled sync to keep the VodLink database current with source changes
-- Backup and restore for the VodLink database
+- Stream proxy: converts `HEAD` to `GET`, caches Dispatcharr session URLs so seeking and resume work
+- Scheduled sync keeps VodLink database current with source changes
+- Backup and restore for VodLink database
 - Dark/light/system theme
-- Runs entirely in Docker
+- Runs in Docker
 
 ---
 
 ## Prerequisites
 
-- [Dispatcharr](https://github.com/Dispatcharr/Dispatcharr) v0.24.0+ with the [VOD2MLIB](https://github.com/R3XCHRIS/VOD2MLIB) plugin configured and generating `/VODS/Movies` and `/VODS/Series`
-- The Dispatcharr `/VODS` directory accessible on the same host as VodLink (volume mount or bind mount)
-- [Emby](https://emby.media) with library directories on the same host
+- [Dispatcharr](https://github.com/Dispatcharr/Dispatcharr) v0.24.0+ with [VOD2MLIB](https://github.com/R3XCHRIS/VOD2MLIB) plugin generating `/VODS/Movies` and `/VODS/Series`
+- Dispatcharr `/VODS` directory accessible on same host as VodLink (volume or bind mount)
+- [Emby](https://emby.media) with library directories on same host
 - Docker + Docker Compose
 
 ---
@@ -67,15 +67,15 @@ Open `http://YOUR-NAS-IP:7842` in your browser.
 
 ## Configuration
 
-Copy `.env.example` to `.env` and set the following:
+Copy `.env.example` to `.env` and set:
 
 | Variable | Description |
 |---|---|
-| `VODLINK_PORT` | Port the UI is served on (default: `7842`) |
-| `VOD_SRC` | Host path to the VOD2MLIB output directory (must contain `Movies/` and `Series/`) |
-| `VOD_DEST` | Host path to the root Emby scans (must contain `Movies/` and `Series/`) |
-| `DATA_DIR` | Where VodLink stores its database and backups |
-| `PUID` / `PGID` | UID/GID to run the container as (run `id <your-user>`) |
+| `VODLINK_PORT` | Port UI is served on (default: `7842`) |
+| `VOD_SRC` | Host path to VOD2MLIB output directory (must contain `Movies/` and `Series/`) |
+| `VOD_DEST` | Host path to root Emby scans (must contain `Movies/` and `Series/`) |
+| `DATA_DIR` | Where VodLink stores database and backups |
+| `PUID` / `PGID` | UID/GID to run container as (run `id <your-user>`) |
 
 ---
 
@@ -83,33 +83,33 @@ Copy `.env.example` to `.env` and set the following:
 
 ### Source Files
 
-VodLink reads the `.strm` and `.nfo` files that VOD2MLIB generates in the Dispatcharr `/VODS/Movies` and `/VODS/Series` directories. These must be mounted into the VodLink container at the same host path (see [Configuration](#configuration)).
+VodLink reads `.strm` and `.nfo` files VOD2MLIB generates in `/VODS/Movies` and `/VODS/Series`. Mount these into the container via `VOD_SRC` (see [Configuration](#configuration)).
 
 ### Linking
 
-**Movies** — VodLink creates a directory in the Emby destination containing a `.strm` file pointing to VodLink's stream proxy endpoint and a copy of the `.nfo` metadata file from the VOD2MLIB source.
+**Movies** — VodLink creates a directory in Emby destination with a `.strm` pointing to VodLink's stream proxy and a copy of the `.nfo` from VOD2MLIB source.
 
-**Series** — VodLink copies the entire VOD2MLIB series directory tree (`.strm` and `.nfo` files for every episode) into the Emby destination.
+**Series** — VodLink copies entire VOD2MLIB series directory tree (`.strm` + `.nfo` for every episode) into Emby destination.
 
-Copied files are refreshed automatically after each scan — if VOD2MLIB updates metadata or adds episodes, the next scan propagates those changes to the Emby destination.
+Copied files refresh after each scan — VOD2MLIB metadata updates and new episodes propagate to Emby destination automatically.
 
 ### Stream Proxy
 
-Dispatcharr's streaming behavior breaks Emby's default playback in two ways:
+Dispatcharr's streaming breaks Emby playback two ways:
 
-- Dispatcharr returns `405` for `HEAD` requests (Emby uses `HEAD` to get file size for seeking and resume)
-- Dispatcharr returns a `301` redirect to a unique per-request session URL (a new request to the same URL creates a new session, causing concurrency errors on seeks)
+- Returns `405` for `HEAD` requests (Emby uses `HEAD` for file size, seeking, resume)
+- Returns `301` redirect to unique per-request session URL (new request = new session = concurrency errors on seeks)
 
 VodLink's `/stream/{type}/{tmdb_id}` proxy handles both:
 
-- **HEAD requests** — converted to `GET Range: bytes=0-0`, extracts total file size from `Content-Range`, returns a synthetic `200` with the correct `Content-Length`
-- **GET requests** — follows Dispatcharr's redirect once, caches the session URL, reuses it for all subsequent range requests so seeks don't create new competing sessions
+- **HEAD** — converted to `GET Range: bytes=0-0`, extracts total size from `Content-Range`, returns synthetic `200` with correct `Content-Length`
+- **GET** — follows Dispatcharr's redirect once, caches session URL, reuses for all range requests so seeks don't create competing sessions
 
 ---
 
 ## Using a Pre-built Image
 
-Instead of building locally, you can pull the image from GitHub Container Registry:
+Pull from GitHub Container Registry:
 
 ```yaml
 # In docker-compose.yml, replace the build block with:
@@ -120,7 +120,7 @@ image: ghcr.io/jdfrey1/vodlink:latest
 
 ## Building Locally
 
-On low-memory hosts (e.g. Synology NAS), limit Docker's build memory to avoid OOM:
+On low-memory hosts (e.g. Synology NAS), limit build memory to avoid OOM:
 
 ```bash
 docker build --memory=3g --memory-swap=4g -t vodlink-vodlink .
