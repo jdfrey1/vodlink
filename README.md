@@ -52,11 +52,13 @@ Dispatcharr + VOD2MLIB plugin
 ## Quick Start
 
 ```bash
-git clone https://github.com/jdfrey1/vodlink.git
-cd vodlink
-cp .env.example .env
-# Edit .env with your paths and settings
-docker compose up -d
+# Download the compose file and example config
+curl -O https://raw.githubusercontent.com/jdfrey1/vodlink/main/docker-compose.example.yml
+curl -O https://raw.githubusercontent.com/jdfrey1/vodlink/main/.env.example
+mv .env.example .env
+
+# Edit .env with your paths and settings, then start
+docker compose -f docker-compose.example.yml up -d
 ```
 
 Open `http://YOUR-NAS-IP:7842` in your browser.
