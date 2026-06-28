@@ -16,9 +16,9 @@ import schedule_manager
 import backup as bk
 
 APP_VERSION = os.getenv("APP_VERSION", "dev")
-MOVIES_DEST = os.getenv("MOVIES_DEST", "/volume1/SSD/VOD/Movies")
-SERIES_DEST = os.getenv("SERIES_DEST", "/volume1/SSD/VOD/Series")
-# URL Emby uses to reach VodLink — written into proxy .strm files
+_VOD_DEST = os.getenv("VOD_DEST", "/vod/dest")
+MOVIES_DEST = os.path.join(_VOD_DEST, "Movies")
+SERIES_DEST = os.path.join(_VOD_DEST, "Series")
 
 # Cache Dispatcharr session URLs from HEAD probes so GET redirects can use the
 # same session URL, avoiding the extra redirect hop and a new 301 from Dispatcharr.
@@ -35,11 +35,11 @@ async def lifespan(app: FastAPI):
     movies_count = db.count_by_type("movie")
     series_count = db.count_by_type("series")
     if movies_count == 0 and series_count == 0:
-        scanner.start_scan_all(full=True)
+        scanner.start_scan_all(full=True, on_complete=_refresh_linked_files)
     elif movies_count == 0:
-        scanner.start_scan("movie", full=True)
+        scanner.start_scan("movie", full=True, on_complete=_refresh_linked_files)
     elif series_count == 0:
-        scanner.start_scan("series", full=True)
+        scanner.start_scan("series", full=True, on_complete=_refresh_linked_files)
     yield
 
 
@@ -52,7 +52,6 @@ def _dest_path(media_type: str, dir_name: str) -> str:
 
 
 def _is_linked(dp: str) -> bool:
-    """True if dest path exists — either symlink (series) or real dir (movie proxy)."""
     return os.path.exists(dp) or os.path.islink(dp)
 
 
@@ -266,9 +265,8 @@ def _link_movie_item(item: dict, base_url: str) -> dict:
         proxy_url = f"{base_url}/stream/movie/{item['tmdb_id']}"
         with open(os.path.join(dest_dir, strm_name), "w") as f:
             f.write(proxy_url)
-        # Symlink .nfo files so Emby has metadata
         for nfo in _find_nfo_files(src_dir):
-            os.symlink(os.path.join(src_dir, nfo), os.path.join(dest_dir, nfo))
+            shutil.copy2(os.path.join(src_dir, nfo), os.path.join(dest_dir, nfo))
     except OSError as e:
         raise HTTPException(500, str(e))
     return {"linked": True}
@@ -305,7 +303,7 @@ def unlink_movie(tmdb_id: str):
     return _unlink_item(_dest_path("movie", item["dir_name"]))
 
 
-# --- Link / unlink series (directory symlink — episode URLs need future work) ---
+# --- Link / unlink series ---
 
 @app.post("/api/series/{tmdb_id}/link")
 def link_series(tmdb_id: str):
@@ -316,7 +314,7 @@ def link_series(tmdb_id: str):
     if _is_linked(dp):
         return {"linked": True, "message": "Already linked"}
     try:
-        os.symlink(item["source_path"], dp)
+        shutil.copytree(item["source_path"], dp)
     except OSError as e:
         raise HTTPException(500, str(e))
     return {"linked": True}
@@ -330,6 +328,63 @@ def unlink_series(tmdb_id: str):
     return _unlink_item(_dest_path("series", item["dir_name"]))
 
 
+# --- File refresh (run after scan to sync copied .nfo / series files) ---
+
+def _sync_dir(src: str, dest: str) -> None:
+    """Copy new/changed files from src into dest; remove files absent from src."""
+    os.makedirs(dest, exist_ok=True)
+    src_names: set[str] = set()
+    for entry in os.scandir(src):
+        src_names.add(entry.name)
+        dest_path = os.path.join(dest, entry.name)
+        if entry.is_dir(follow_symlinks=False):
+            _sync_dir(entry.path, dest_path)
+        else:
+            try:
+                src_mtime = entry.stat(follow_symlinks=False).st_mtime
+                dst_mtime = os.stat(dest_path).st_mtime if os.path.exists(dest_path) else 0
+                if src_mtime > dst_mtime:
+                    shutil.copy2(entry.path, dest_path)
+            except OSError:
+                pass
+    try:
+        for entry in os.scandir(dest):
+            if entry.name not in src_names:
+                if entry.is_dir(follow_symlinks=False):
+                    shutil.rmtree(entry.path, ignore_errors=True)
+                else:
+                    try:
+                        os.unlink(entry.path)
+                    except OSError:
+                        pass
+    except OSError:
+        pass
+
+
+def _refresh_linked_files(media_type: str) -> None:
+    for dir_name in _linked_dir_names(media_type):
+        item = db.get_by_dir_name(media_type, dir_name)
+        if not item:
+            continue
+        src_dir = item["source_path"]
+        dest_dir = _dest_path(media_type, dir_name)
+        if os.path.islink(dest_dir):
+            continue  # old-style symlink — skip until user relinks
+        if media_type == "movie":
+            for nfo in _find_nfo_files(src_dir):
+                src_nfo = os.path.join(src_dir, nfo)
+                dst_nfo = os.path.join(dest_dir, nfo)
+                try:
+                    src_mtime = os.stat(src_nfo).st_mtime
+                    dst_mtime = os.stat(dst_nfo).st_mtime if os.path.exists(dst_nfo) else 0
+                    if src_mtime > dst_mtime:
+                        shutil.copy2(src_nfo, dst_nfo)
+                except OSError:
+                    pass
+        else:
+            _sync_dir(src_dir, dest_dir)
+
+
 # --- Sync check ---
 
 def _check_dest(media_type: str, dest: str) -> list[dict]:
@@ -340,28 +395,10 @@ def _check_dest(media_type: str, dest: str) -> list[dict]:
         return issues
     for name in entries:
         path = os.path.join(dest, name)
-        is_link = os.path.islink(path)
-        is_dir = os.path.isdir(path)
-        target = os.readlink(path) if is_link else None
-        db_item = db.get_by_dir_name(media_type, name)
-
-        if is_link:
-            if not os.path.exists(path):
-                issues.append({"dir_name": name, "issue": "broken_symlink", "target": target,
-                                "expected": db_item["source_path"] if db_item else None})
-            elif not db_item:
-                issues.append({"dir_name": name, "issue": "orphaned", "target": target, "expected": None})
-            elif target != db_item["source_path"]:
-                issues.append({"dir_name": name, "issue": "wrong_target", "target": target,
-                                "expected": db_item["source_path"]})
-        elif is_dir:
-            # Real directory — check if it's a VodLink-managed proxy dir
-            if not db_item:
-                issues.append({"dir_name": name, "issue": "orphaned", "target": None, "expected": None})
-            # If it's in DB it's ours (VodLink created it) — no issue
-        else:
-            issues.append({"dir_name": name, "issue": "real_dir", "target": None,
-                           "expected": db_item["source_path"] if db_item else None})
+        if not (os.path.isdir(path) or os.path.islink(path)):
+            continue
+        if not db.get_by_dir_name(media_type, name):
+            issues.append({"dir_name": name, "issue": "orphaned"})
     return issues
 
 
@@ -404,19 +441,19 @@ def scan_status():
 
 @app.post("/api/scan/movies")
 def scan_movies(full: bool = False):
-    scanner.start_scan("movie", full=full)
+    scanner.start_scan("movie", full=full, on_complete=_refresh_linked_files)
     return {"started": True, "type": "movie", "full": full}
 
 
 @app.post("/api/scan/series")
 def scan_series_route(full: bool = False):
-    scanner.start_scan("series", full=full)
+    scanner.start_scan("series", full=full, on_complete=_refresh_linked_files)
     return {"started": True, "type": "series", "full": full}
 
 
 @app.post("/api/scan/all")
 def scan_all(full: bool = False):
-    scanner.start_scan_all(full=full)
+    scanner.start_scan_all(full=full, on_complete=_refresh_linked_files)
     return {"started": True, "type": "all", "full": full}
 
 

@@ -12,17 +12,11 @@ services:
     ports:
       - "${VODLINK_PORT:-7842}:8000"
     volumes:
-      # Source paths are mirrored exactly (host path == container path) so that
-      # symlinks VodLink creates inside the container resolve on the host too.
-      - ${MOVIES_SRC}:${MOVIES_SRC}:ro
-      - ${SERIES_SRC}:${SERIES_SRC}:ro
-      - ${MOVIES_DEST}:${MOVIES_DEST}:rw
-      - ${SERIES_DEST}:${SERIES_DEST}:rw
+      - ${VOD_SRC}:/vod/src:ro
+      - ${VOD_DEST}:/vod/dest:rw
       - ${DATA_DIR:-/volume1/docker/vodlink/data}:/app/data:rw
     environment:
-      - MOVIES_SRC=${MOVIES_SRC}
-      - SERIES_SRC=${SERIES_SRC}
-      - MOVIES_DEST=${MOVIES_DEST}
-      - SERIES_DEST=${SERIES_DEST}
+      - VOD_SRC=/vod/src
+      - VOD_DEST=/vod/dest
       - DB_PATH=/app/data/vodlink.db
     restart: unless-stopped

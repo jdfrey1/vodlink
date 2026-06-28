@@ -70,14 +70,10 @@ Copy `.env.example` to `.env` and set the following:
 | Variable | Description |
 |---|---|
 | `VODLINK_PORT` | Port the UI is served on (default: `7842`) |
-| `MOVIES_SRC` | Host path to Dispatcharr's Movies VOD directory |
-| `SERIES_SRC` | Host path to Dispatcharr's Series VOD directory |
-| `MOVIES_DEST` | Host path to the directory Emby scans for movies |
-| `SERIES_DEST` | Host path to the directory Emby scans for series |
+| `VOD_SRC` | Host path to the VOD2MLIB output directory (must contain `Movies/` and `Series/`) |
+| `VOD_DEST` | Host path to the root Emby scans (must contain `Movies/` and `Series/`) |
 | `DATA_DIR` | Where VodLink stores its database and backups |
 | `PUID` / `PGID` | UID/GID to run the container as (run `id <your-user>`) |
-
-> **Important:** `MOVIES_SRC` and `SERIES_SRC` must be the exact host paths — they are mounted at the same path inside the container so that symlinks VodLink creates resolve correctly when Emby follows them on the host.
 
 ---
 
@@ -89,9 +85,11 @@ VodLink reads the `.strm` and `.nfo` files that VOD2MLIB generates in the Dispat
 
 ### Linking
 
-**Movies** — VodLink creates a real directory in the Emby destination with a `.strm` file pointing to VodLink's stream proxy endpoint, plus symlinked `.nfo` metadata files from the VOD2MLIB source.
+**Movies** — VodLink creates a directory in the Emby destination containing a `.strm` file pointing to VodLink's stream proxy endpoint and a copy of the `.nfo` metadata file from the VOD2MLIB source.
 
-**Series** — VodLink creates a directory symlink pointing directly at the VOD2MLIB source directory.
+**Series** — VodLink copies the entire VOD2MLIB series directory tree (`.strm` and `.nfo` files for every episode) into the Emby destination.
+
+Copied files are refreshed automatically after each scan — if VOD2MLIB updates metadata or adds episodes, the next scan propagates those changes to the Emby destination.
 
 ### Stream Proxy
 

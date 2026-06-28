@@ -4,8 +4,9 @@ import threading
 import xml.etree.ElementTree as ET
 import database as db
 
-MOVIES_SRC = os.getenv("MOVIES_SRC", "/volume1/docker/dispatcharr/VODS/Movies")
-SERIES_SRC = os.getenv("SERIES_SRC", "/volume1/docker/dispatcharr/VODS/Series")
+_VOD_SRC = os.getenv("VOD_SRC", "/vod/src")
+MOVIES_SRC = os.path.join(_VOD_SRC, "Movies")
+SERIES_SRC = os.path.join(_VOD_SRC, "Series")
 
 scan_state: dict = {
     "running": False,
@@ -143,16 +144,24 @@ def _scan(media_type: str, full: bool = False):
         scan_state["current_type"] = None
 
 
-def start_scan(media_type: str, full: bool = False):
-    t = threading.Thread(target=_scan, args=(media_type, full), daemon=True)
+def start_scan(media_type: str, full: bool = False, on_complete=None):
+    def run():
+        _scan(media_type, full)
+        if on_complete:
+            on_complete(media_type)
+    t = threading.Thread(target=run, daemon=True)
     t.start()
     return t
 
 
-def start_scan_all(full: bool = False):
+def start_scan_all(full: bool = False, on_complete=None):
     def _all():
         _scan("movie", full)
+        if on_complete:
+            on_complete("movie")
         _scan("series", full)
+        if on_complete:
+            on_complete("series")
 
     t = threading.Thread(target=_all, daemon=True)
     t.start()
