@@ -1,0 +1,15 @@
+services:
+  vodlink:
+    image: ghcr.io/jdfrey1/vodlink:latest
+    container_name: vodlink
+    user: "${PUID}:${PGID}"
+    ports:
+      - "${VODLINK_PORT:-7842}:8000"
+    volumes:
+      # Host path to VOD2MLIB output directory (contains Movies/ and Series/).
+      - ${VOD_SRC}:/vod/src:ro
+      # Host path to the directory Emby scans (must contain Movies/ and Series/).
+      - ${VOD_DEST}:/vod/dest:rw
+      # Persistent storage for the VodLink database and backups.
+      - ${DATA_DIR}:/app/data:rw
+    restart: unless-stopped
