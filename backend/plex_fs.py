@@ -52,10 +52,11 @@ def _get_stream_size(url: str | None) -> int:
     if cached and time.monotonic() - cached[1] < _SIZE_TTL:
         return cached[0]
     try:
+        # HEAD — VodLink returns Content-Length without streaming any bytes,
+        # keeping the Dispatcharr session alive for subsequent reads.
         with httpx.Client(timeout=15, follow_redirects=True) as c:
-            r = c.get(url, headers={"Range": "bytes=0-0"})
-            m = re.search(r"/(\d+)$", r.headers.get("content-range", ""))
-            size = int(m.group(1)) if m else 0
+            r = c.head(url)
+            size = int(r.headers.get("content-length", 0))
     except Exception:
         size = 0
     _SIZE_CACHE[url] = (size, time.monotonic())

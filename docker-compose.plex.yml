@@ -14,8 +14,11 @@
 services:
   vodlink:
     privileged: true
+    stop_grace_period: 30s
     environment:
       - PLEX_MOUNT=/vod/plex
+    # Clean up any stale FUSE mount from a previous container before starting.
+    command: ["sh", "-c", "fusermount -u /vod/plex 2>/dev/null; umount -l /vod/plex 2>/dev/null; exec uvicorn main:app --host 0.0.0.0 --port 8000"]
     volumes:
       - type: bind
         source: ${PLEX_MOUNT_DIR}

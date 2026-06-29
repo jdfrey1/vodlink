@@ -200,10 +200,12 @@ async def _do_proxy(request: Request, dispatcharr_url: str, cache_key: str):
                 _session_cache[cache_key] = (landed, now + _SESSION_TTL)
 
         if resp.status_code not in (200, 206):
-            if session_url is not None:
-                _session_cache.pop(cache_key, None)
             await resp.aclose()
             await client.aclose()
+            if session_url is not None:
+                # Cached session URL expired — retry once with a fresh probe.
+                _session_cache.pop(cache_key, None)
+                return await _do_proxy(request, dispatcharr_url, cache_key)
             raise HTTPException(resp.status_code, "Upstream error")
 
         resp_headers = {k: v for k, v in resp.headers.items()
