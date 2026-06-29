@@ -17,6 +17,7 @@ import schedule_manager
 import backup as bk
 
 APP_VERSION = os.getenv("APP_VERSION", "dev").lstrip("v")
+PLEX_MOUNT = os.getenv("PLEX_MOUNT", "")
 MOVIES_DEST = "/vod/dest/Movies"
 SERIES_DEST = "/vod/dest/Series"
 
@@ -65,6 +66,13 @@ async def lifespan(app: FastAPI):
         scanner.start_scan("movie", full=True, on_complete=_refresh_linked_files)
     elif series_count == 0:
         scanner.start_scan("series", full=True, on_complete=_refresh_linked_files)
+    if PLEX_MOUNT:
+        import atexit
+        import subprocess
+        import threading
+        import plex_fs
+        atexit.register(lambda: subprocess.run(["fusermount", "-u", PLEX_MOUNT], capture_output=True))
+        threading.Thread(target=plex_fs.mount, args=(PLEX_MOUNT,), daemon=True).start()
     yield
 
 

@@ -1,0 +1,24 @@
+# Plex support override — enables the FUSE virtual filesystem.
+#
+# Usage (one-time setup):
+#   mkdir -p ${PLEX_MOUNT_DIR}
+#   Add to .env:
+#     COMPOSE_FILE=docker-compose.yml:docker-compose.plex.yml
+#     PLEX_MOUNT_DIR=/volume1/vodlink-plex   # host path Plex can read
+#
+# Then: docker compose up -d  (COMPOSE_FILE makes it pick up both files)
+#
+# Plex library paths:
+#   Movies  → ${PLEX_MOUNT_DIR}/Movies
+#   TV Shows → ${PLEX_MOUNT_DIR}/Series
+services:
+  vodlink:
+    privileged: true
+    environment:
+      - PLEX_MOUNT=/vod/plex
+    volumes:
+      - type: bind
+        source: ${PLEX_MOUNT_DIR}
+        target: /vod/plex
+        bind:
+          propagation: shared
