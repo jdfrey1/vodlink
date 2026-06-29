@@ -42,12 +42,13 @@ log = logging.getLogger(__name__)
 DEST_ROOT = "/vod/dest"
 SRC_ROOT = "/vod/src"   # fallback for NFO symlinks that point to host-absolute paths
 
-# Placeholder reported to Plex during scan before the real size is known.
-_PLACEHOLDER_SIZE = 50 * 1024 * 1024 * 1024  # 50 GB
-
 _SIZE_CACHE_PATH = "/app/data/plex_sizes.json"
 _size_cache: dict[str, int] = {}   # strm_path -> bytes
 _size_lock = threading.Lock()
+
+# Limit concurrent HEAD probes so we don't create many simultaneous Dispatcharr
+# sessions during a Plex library scan.
+_PROBE_SEM = threading.Semaphore(3)
 
 
 def _load_size_cache() -> None:
@@ -70,8 +71,30 @@ def _save_size(strm_path: str, size: int) -> None:
             pass
 
 
-def _cached_size(strm_path: str) -> int:
-    return _size_cache.get(strm_path, _PLACEHOLDER_SIZE)
+def _get_size(strm_path: str) -> int:
+    """Return cached size or probe VodLink HEAD to discover it."""
+    cached = _size_cache.get(strm_path)
+    if cached:
+        return cached
+    url = _strm_to_vodlink_url(strm_path)
+    if not url:
+        return 0
+    # Limit concurrency so a full library scan doesn't overwhelm Dispatcharr.
+    with _PROBE_SEM:
+        # Re-check cache after acquiring semaphore (another thread may have probed).
+        cached = _size_cache.get(strm_path)
+        if cached:
+            return cached
+        try:
+            with httpx.Client(timeout=10, follow_redirects=True) as c:
+                r = c.head(url)
+            cl = int(r.headers.get("content-length", 0))
+            if cl > 0:
+                _save_size(strm_path, cl)
+                return cl
+        except Exception as e:
+            log.debug("plex_fs size probe failed %s: %s", strm_path, e)
+    return 0
 
 
 def _strm_to_vodlink_url(strm_path: str) -> str | None:
@@ -117,7 +140,7 @@ class VodLinkFS(Operations):
             if not os.path.exists(strm):
                 raise FuseOSError(errno.ENOENT)
             st = os.stat(strm)
-            size = _cached_size(strm)
+            size = _get_size(strm)
             return dict(
                 st_mode=stat.S_IFREG | 0o444,
                 st_nlink=1,
