@@ -5,6 +5,8 @@ services:
     user: "${PUID}:${PGID}"
     ports:
       - "${VODLINK_PORT:-7842}:8000"
+    environment:
+      - TZ=${TZ:-UTC}
     volumes:
       # Host path to VOD2MLIB output directory (contains Movies/ and Series/).
       - ${VOD_SRC}:/vod/src:ro

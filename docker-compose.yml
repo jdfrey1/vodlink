@@ -11,6 +11,8 @@ services:
     user: "${PUID:-1000}:${PGID:-1000}"
     ports:
       - "${VODLINK_PORT:-7842}:8000"
+    environment:
+      - TZ=${TZ:-UTC}
     volumes:
       - ${VOD_SRC}:/vod/src:ro
       - ${VOD_DEST}:/vod/dest:rw

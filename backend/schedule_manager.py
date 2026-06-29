@@ -20,7 +20,9 @@ _DEFAULTS = {
     "full": False,
 }
 
-_scheduler = BackgroundScheduler()
+import os as _os
+_tz = _os.getenv("TZ", "UTC")
+_scheduler = BackgroundScheduler(timezone=_tz)
 _scheduler.start()
 
 

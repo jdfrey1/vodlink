@@ -1,4 +1,5 @@
 import os
+import json
 import time
 import threading
 import xml.etree.ElementTree as ET
@@ -6,14 +7,36 @@ import database as db
 
 MOVIES_SRC = "/vod/src/Movies"
 SERIES_SRC = "/vod/src/Series"
+_STATE_PATH = os.path.join(os.path.dirname(os.getenv("DB_PATH", "/app/data/vodlink.db")), "scan_state.json")
 
+
+def _load_persisted() -> dict:
+    try:
+        with open(_STATE_PATH) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _save_persisted() -> None:
+    try:
+        with open(_STATE_PATH, "w") as f:
+            json.dump({
+                "last_scan_movies": scan_state["last_scan_movies"],
+                "last_scan_series": scan_state["last_scan_series"],
+            }, f)
+    except OSError:
+        pass
+
+
+_persisted = _load_persisted()
 scan_state: dict = {
     "running": False,
     "current_type": None,
     "progress": 0,
     "total": 0,
-    "last_scan_movies": None,
-    "last_scan_series": None,
+    "last_scan_movies": _persisted.get("last_scan_movies"),
+    "last_scan_series": _persisted.get("last_scan_series"),
     "error": None,
 }
 _lock = threading.Lock()
@@ -135,6 +158,7 @@ def _scan(media_type: str, full: bool = False):
 
         key = "last_scan_movies" if media_type == "movie" else "last_scan_series"
         scan_state[key] = time.time()
+        _save_persisted()
 
     except Exception as e:
         scan_state["error"] = str(e)
