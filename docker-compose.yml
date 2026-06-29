@@ -15,6 +15,7 @@ services:
       - "${VODLINK_PORT:-7842}:8000"
     environment:
       - TZ=${TZ:-UTC}
+      - DISPATCHARR_URL=${DISPATCHARR_URL:-}
     volumes:
       - ${VOD_SRC}:/vod/src:ro
       - ${VOD_DEST}:/vod/dest:rw

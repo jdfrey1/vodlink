@@ -18,6 +18,7 @@ import backup as bk
 
 APP_VERSION = os.getenv("APP_VERSION", "dev").lstrip("v")
 PLEX_MOUNT = os.getenv("PLEX_MOUNT", "")
+DISPATCHARR_URL = os.getenv("DISPATCHARR_URL", "")  # rewrite host:port in .strm URLs
 MOVIES_DEST = "/vod/dest/Movies"
 SERIES_DEST = "/vod/dest/Series"
 
@@ -102,6 +103,15 @@ def _linked_dir_names(media_type: str) -> list[str]:
         return []
 
 
+def _rewrite_dispatcharr_url(url: str) -> str:
+    """Replace host:port in a Dispatcharr URL if DISPATCHARR_URL env var is set."""
+    if not DISPATCHARR_URL or not url:
+        return url
+    src = urllib.parse.urlparse(url)
+    dst = urllib.parse.urlparse(DISPATCHARR_URL)
+    return urllib.parse.urlunparse(src._replace(scheme=dst.scheme, netloc=dst.netloc))
+
+
 def _find_strm_url(src_dir: str) -> str | None:
     """Read the Dispatcharr URL from the .strm file in the source directory."""
     try:
@@ -109,7 +119,7 @@ def _find_strm_url(src_dir: str) -> str | None:
             if f.endswith(".strm"):
                 content = open(os.path.join(src_dir, f)).read().strip()
                 if content.startswith("http"):
-                    return content
+                    return _rewrite_dispatcharr_url(content)
     except OSError:
         pass
     return None
@@ -242,7 +252,7 @@ async def stream_series_episode(tmdb_id: str, file_path: str, request: Request):
     try:
         content = open(strm_path).read().strip()
         if content.startswith("http"):
-            dispatcharr_url = content
+            dispatcharr_url = _rewrite_dispatcharr_url(content)
     except OSError:
         pass
     if not dispatcharr_url:
