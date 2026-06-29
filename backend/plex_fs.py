@@ -7,6 +7,11 @@ When Plex reads a .mkv, this module makes ranged HTTP requests to the URL
 stored in the corresponding .strm (VodLink proxy → Dispatcharr).
 .nfo files and directories pass through unmodified.
 
+File sizes are NOT probed during directory scans (that would hammer Dispatcharr
+with short-lived connections). Instead a persistent cache in /app/data/plex_sizes.json
+is populated lazily the first time each file is actually read. Until then, a
+large placeholder size is reported so Plex adds the item to the library.
+
 Requires:
   - fusepy (pip) + libfuse2 (apt)
   - Container run with --privileged (or --device /dev/fuse --cap-add SYS_ADMIN)
@@ -14,11 +19,12 @@ Requires:
   - Mount volume must have bind-propagation=shared so the mount is visible on host
 """
 import errno
+import json
 import logging
 import os
 import re
 import stat
-import time
+import threading
 
 import httpx
 
@@ -27,14 +33,45 @@ try:
     _FUSE_AVAILABLE = True
 except ImportError:
     _FUSE_AVAILABLE = False
-    Operations = object  # fallback so class definition doesn't fail
+    Operations = object
 
 log = logging.getLogger(__name__)
 
 DEST_ROOT = "/vod/dest"
-SRC_ROOT = "/vod/src"   # fallback for NFO symlinks that point to host absolute paths
-_SIZE_CACHE: dict[str, tuple[int, float]] = {}
-_SIZE_TTL = 3600.0
+SRC_ROOT = "/vod/src"
+
+# Placeholder reported to Plex during scan before the real size is known.
+# Large enough that Plex treats it as a real file; seek bar corrects itself
+# once actual Content-Range arrives during playback.
+_PLACEHOLDER_SIZE = 50 * 1024 * 1024 * 1024  # 50 GB
+
+_SIZE_CACHE_PATH = "/app/data/plex_sizes.json"
+_size_cache: dict[str, int] = {}   # strm_path -> bytes
+_size_lock = threading.Lock()
+
+
+def _load_size_cache() -> None:
+    try:
+        with open(_SIZE_CACHE_PATH) as f:
+            _size_cache.update(json.load(f))
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+
+
+def _save_size(strm_path: str, size: int) -> None:
+    with _size_lock:
+        if _size_cache.get(strm_path) == size:
+            return
+        _size_cache[strm_path] = size
+        try:
+            with open(_SIZE_CACHE_PATH, "w") as f:
+                json.dump(_size_cache, f)
+        except OSError:
+            pass
+
+
+def _cached_size(strm_path: str) -> int:
+    return _size_cache.get(strm_path, _PLACEHOLDER_SIZE)
 
 
 def _read_strm(strm_path: str) -> str | None:
@@ -43,24 +80,6 @@ def _read_strm(strm_path: str) -> str | None:
         return content if content.startswith("http") else None
     except OSError:
         return None
-
-
-def _get_stream_size(url: str | None) -> int:
-    if not url:
-        return 0
-    cached = _SIZE_CACHE.get(url)
-    if cached and time.monotonic() - cached[1] < _SIZE_TTL:
-        return cached[0]
-    try:
-        # HEAD — VodLink returns Content-Length without streaming any bytes,
-        # keeping the Dispatcharr session alive for subsequent reads.
-        with httpx.Client(timeout=15, follow_redirects=True) as c:
-            r = c.head(url)
-            size = int(r.headers.get("content-length", 0))
-    except Exception:
-        size = 0
-    _SIZE_CACHE[url] = (size, time.monotonic())
-    return size
 
 
 class VodLinkFS(Operations):
@@ -75,7 +94,7 @@ class VodLinkFS(Operations):
         return self._real(path[:-4] + ".strm")
 
     def _resolve(self, path: str) -> str | None:
-        """Return a readable real path, following symlinks via /vod/src/ fallback."""
+        """Return a readable path, with /vod/src/ fallback for broken NFO symlinks."""
         real = self._real(path)
         if os.path.exists(real):
             return real
@@ -92,7 +111,9 @@ class VodLinkFS(Operations):
             if not os.path.exists(strm):
                 raise FuseOSError(errno.ENOENT)
             st = os.stat(strm)
-            size = _get_stream_size(_read_strm(strm))
+            # Use cached real size if we have it; otherwise placeholder.
+            # Never probe Dispatcharr here — that would hammer it during scans.
+            size = _cached_size(strm)
             return dict(
                 st_mode=stat.S_IFREG | 0o444,
                 st_nlink=1,
@@ -152,6 +173,13 @@ class VodLinkFS(Operations):
                     r = c.get(url, headers={"Range": f"bytes={offset}-{offset + size - 1}"})
                     if r.status_code not in (200, 206):
                         raise FuseOSError(errno.EIO)
+                    # Cache the real file size from Content-Range on first successful read.
+                    cr = r.headers.get("content-range", "")
+                    m = re.search(r"/(\d+)$", cr)
+                    if m:
+                        real_size = int(m.group(1))
+                        if _size_cache.get(strm) != real_size:
+                            _save_size(strm, real_size)
                     return r.content
             except FuseOSError:
                 raise
@@ -175,15 +203,16 @@ def mount(mountpoint: str) -> None:
     if not _FUSE_AVAILABLE:
         log.error("fusepy not installed — Plex filesystem unavailable")
         return
+    _load_size_cache()
     try:
         os.makedirs(mountpoint, exist_ok=True)
         log.info("VodLink Plex FS mounting at %s", mountpoint)
         FUSE(
             VodLinkFS(),
             mountpoint,
-            nothreads=False,   # allow parallel reads for faster Plex scanning
-            foreground=True,   # run in foreground (caller manages thread)
-            allow_other=True,  # Plex user can access files mounted by VodLink user
+            nothreads=False,
+            foreground=True,
+            allow_other=True,
         )
     except Exception as e:
         log.error("VodLink Plex FS failed: %s", e)
