@@ -1,9 +1,12 @@
+import logging
 import os
 import re
 import shutil
 import time
 import urllib.parse
 from contextlib import asynccontextmanager
+
+log = logging.getLogger("vodlink")
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File
@@ -206,6 +209,8 @@ async def _do_proxy(request: Request, dispatcharr_url: str, cache_key: str):
             try:
                 async for chunk in resp.aiter_bytes(chunk_size=524288):  # 512 KB
                     yield chunk
+            except Exception as exc:
+                log.warning("stream body error [%s]: %s", cache_key, exc)
             finally:
                 await resp.aclose()
                 await client.aclose()
@@ -447,6 +452,8 @@ def _refresh_linked_files(media_type: str) -> None:
                 src_nfo = os.path.join(src_dir, nfo)
                 dst_nfo = os.path.join(dest_dir, nfo)
                 try:
+                    if os.path.islink(dst_nfo) and not os.path.exists(dst_nfo):
+                        os.remove(dst_nfo)
                     src_mtime = os.stat(src_nfo).st_mtime
                     dst_mtime = os.stat(dst_nfo).st_mtime if os.path.exists(dst_nfo) else 0
                     if src_mtime > dst_mtime:
