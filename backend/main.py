@@ -173,10 +173,16 @@ async def _do_proxy(request: Request, dispatcharr_url: str, cache_key: str):
                 landed = str(resp.url)
                 if landed != dispatcharr_url:
                     _session_cache[cache_key] = (landed, now + _SESSION_TTL)
+            probe_status = resp.status_code
             probe_headers = dict(resp.headers)
             await resp.aclose()
         finally:
             await client.aclose()
+
+        # Stale cached session → retry once with a fresh probe.
+        if probe_status not in (200, 206) and session_url is not None:
+            _session_cache.pop(cache_key, None)
+            return await _do_proxy(request, dispatcharr_url, cache_key)
 
         headers: dict[str, str] = {}
         for h in ("content-type", "accept-ranges", "last-modified", "etag"):
