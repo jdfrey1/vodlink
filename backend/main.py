@@ -22,6 +22,7 @@ import backup as bk
 APP_VERSION = os.getenv("APP_VERSION", "dev").lstrip("v")
 MOVIES_DEST = "/vod/dest/Movies"
 SERIES_DEST = "/vod/dest/Series"
+VODLINK_BASE_URL = os.getenv("VODLINK_BASE_URL", "").rstrip("/")
 
 # Cache Dispatcharr session URLs from HEAD probes so GET redirects can use the
 # same session URL, avoiding the extra redirect hop and a new 301 from Dispatcharr.
@@ -40,6 +41,8 @@ def _store_base_url(url: str) -> None:
 
 
 def _get_base_url() -> str:
+    if VODLINK_BASE_URL:
+        return VODLINK_BASE_URL
     if _vodlink_base_url:
         return _vodlink_base_url
     # Derive from existing linked movie .strm files on startup / before first link op.
