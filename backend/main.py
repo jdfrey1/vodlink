@@ -2,6 +2,7 @@ import os
 import re
 import shutil
 import time
+import urllib.parse
 from contextlib import asynccontextmanager
 
 import httpx
@@ -21,9 +22,34 @@ SERIES_DEST = "/vod/dest/Series"
 
 # Cache Dispatcharr session URLs from HEAD probes so GET redirects can use the
 # same session URL, avoiding the extra redirect hop and a new 301 from Dispatcharr.
-# key = "movie:TMDB_ID" or "series:TMDB_ID", value = (session_url, expires_at)
+# key = "movie:TMDB_ID" or "series:TMDB_ID:rel_path", value = (session_url, expires_at)
 _session_cache: dict[str, tuple[str, float]] = {}
 _SESSION_TTL = 3600.0  # 1 hour
+
+# Stored so background threads (refresh after scan) can rewrite series .strm files.
+_vodlink_base_url: str = ""
+
+
+def _store_base_url(url: str) -> None:
+    global _vodlink_base_url
+    if url:
+        _vodlink_base_url = url
+
+
+def _get_base_url() -> str:
+    if _vodlink_base_url:
+        return _vodlink_base_url
+    # Derive from existing linked movie .strm files on startup / before first link op.
+    try:
+        for d in os.listdir(MOVIES_DEST):
+            for f in os.listdir(os.path.join(MOVIES_DEST, d)):
+                if f.endswith(".strm"):
+                    content = open(os.path.join(MOVIES_DEST, d, f)).read().strip()
+                    if "/stream/movie/" in content:
+                        return content[:content.find("/stream/movie/")]
+    except OSError:
+        pass
+    return ""
 
 
 @asynccontextmanager
@@ -116,20 +142,11 @@ _STREAM_TIMEOUT = httpx.Timeout(connect=10.0, read=300.0, write=10.0, pool=5.0)
 _NO_KEEPALIVE = httpx.Limits(max_keepalive_connections=0, max_connections=20)
 
 
-@app.api_route("/stream/{media_type}/{tmdb_id}", methods=["GET", "HEAD"])
-async def stream_media(media_type: str, tmdb_id: str, request: Request):
-    item = db.get_by_tmdb(media_type, tmdb_id)
-    if not item:
-        raise HTTPException(404, "Not found")
-
-    dispatcharr_url = _find_strm_url(item["source_path"])
-    if not dispatcharr_url:
-        raise HTTPException(503, "No stream URL found in source")
-
+async def _do_proxy(request: Request, dispatcharr_url: str, cache_key: str):
+    """Shared proxy logic for movie and series episode streams."""
     fwd_headers = {k: v for k, v in request.headers.items()
                    if k.lower() not in ("host", "connection", "transfer-encoding")}
 
-    cache_key = f"{media_type}:{tmdb_id}"
     now = time.monotonic()
     cached = _session_cache.get(cache_key)
     session_url = cached[0] if (cached and cached[1] > now) else None
@@ -161,21 +178,19 @@ async def stream_media(media_type: str, tmdb_id: str, request: Request):
         m = re.search(r"/(\d+)$", cr)
         if m:
             headers["content-length"] = m.group(1)
+            headers["accept-ranges"] = "bytes"
         return Response(status_code=200, headers=headers)
 
-    # GET: proxy the stream through VodLink so Emby uses a stable URL for
-    # all Range/seek requests (Emby does not cache redirect targets).
+    # GET: proxy so Emby uses a stable URL for all Range/seek requests.
     try:
         req = client.build_request("GET", target, headers=fwd_headers)
         resp = await client.send(req, stream=True)
 
-        # Cache the session URL we landed on after Dispatcharr's 301 redirect.
         if session_url is None:
             landed = str(resp.url)
             if landed != dispatcharr_url:
                 _session_cache[cache_key] = (landed, now + _SESSION_TTL)
 
-        # Session may have expired — clear cache and let Emby retry.
         if resp.status_code not in (200, 206):
             if session_url is not None:
                 _session_cache.pop(cache_key, None)
@@ -199,6 +214,35 @@ async def stream_media(media_type: str, tmdb_id: str, request: Request):
     except Exception:
         await client.aclose()
         raise
+
+
+@app.api_route("/stream/series/{tmdb_id}/{file_path:path}", methods=["GET", "HEAD"])
+async def stream_series_episode(tmdb_id: str, file_path: str, request: Request):
+    item = db.get_by_tmdb("series", tmdb_id)
+    if not item:
+        raise HTTPException(404, "Not found")
+    strm_path = os.path.join(item["source_path"], file_path + ".strm")
+    dispatcharr_url = None
+    try:
+        content = open(strm_path).read().strip()
+        if content.startswith("http"):
+            dispatcharr_url = content
+    except OSError:
+        pass
+    if not dispatcharr_url:
+        raise HTTPException(503, "No stream URL found")
+    return await _do_proxy(request, dispatcharr_url, f"series:{tmdb_id}:{file_path}")
+
+
+@app.api_route("/stream/{media_type}/{tmdb_id}", methods=["GET", "HEAD"])
+async def stream_media(media_type: str, tmdb_id: str, request: Request):
+    item = db.get_by_tmdb(media_type, tmdb_id)
+    if not item:
+        raise HTTPException(404, "Not found")
+    dispatcharr_url = _find_strm_url(item["source_path"])
+    if not dispatcharr_url:
+        raise HTTPException(503, "No stream URL found in source")
+    return await _do_proxy(request, dispatcharr_url, f"{media_type}:{tmdb_id}")
 
 
 # --- List / search ---
@@ -291,7 +335,9 @@ def link_movie(tmdb_id: str, request: Request):
         raise HTTPException(404, "Movie not found")
     scheme = request.headers.get("x-forwarded-proto", "http")
     host = request.headers.get("host", "")
-    return _link_movie_item(item, f"{scheme}://{host}")
+    base_url = f"{scheme}://{host}"
+    _store_base_url(base_url)
+    return _link_movie_item(item, base_url)
 
 
 @app.delete("/api/movies/{tmdb_id}/link")
@@ -305,7 +351,7 @@ def unlink_movie(tmdb_id: str):
 # --- Link / unlink series ---
 
 @app.post("/api/series/{tmdb_id}/link")
-def link_series(tmdb_id: str):
+def link_series(tmdb_id: str, request: Request):
     item = db.get_by_tmdb("series", tmdb_id)
     if not item:
         raise HTTPException(404, "Series not found")
@@ -316,6 +362,11 @@ def link_series(tmdb_id: str):
         shutil.copytree(item["source_path"], dp)
     except OSError as e:
         raise HTTPException(500, str(e))
+    scheme = request.headers.get("x-forwarded-proto", "http")
+    host = request.headers.get("host", "")
+    base_url = f"{scheme}://{host}"
+    _store_base_url(base_url)
+    _rewrite_series_strm_files(dp, item["tmdb_id"], base_url)
     return {"linked": True}
 
 
@@ -360,6 +411,27 @@ def _sync_dir(src: str, dest: str) -> None:
         pass
 
 
+def _rewrite_series_strm_files(dest_dir: str, tmdb_id: str, base_url: str) -> None:
+    """Rewrite series episode .strm files to route through VodLink proxy."""
+    for root, _dirs, files in os.walk(dest_dir):
+        for f in files:
+            if not f.endswith(".strm"):
+                continue
+            path = os.path.join(root, f)
+            try:
+                content = open(path).read().strip()
+                if "/stream/series/" in content:
+                    continue  # already a proxy URL
+                if not content.startswith("http"):
+                    continue
+                rel = os.path.relpath(path, dest_dir)[:-5]  # strip ".strm"
+                encoded = urllib.parse.quote(rel, safe="/")
+                with open(path, "w") as fp:
+                    fp.write(f"{base_url}/stream/series/{tmdb_id}/{encoded}")
+            except OSError:
+                pass
+
+
 def _refresh_linked_files(media_type: str) -> None:
     for dir_name in _linked_dir_names(media_type):
         item = db.get_by_dir_name(media_type, dir_name)
@@ -382,6 +454,9 @@ def _refresh_linked_files(media_type: str) -> None:
                     pass
         else:
             _sync_dir(src_dir, dest_dir)
+            base_url = _get_base_url()
+            if base_url:
+                _rewrite_series_strm_files(dest_dir, item["tmdb_id"], base_url)
 
 
 # --- Sync check ---
