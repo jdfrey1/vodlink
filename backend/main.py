@@ -17,8 +17,6 @@ import schedule_manager
 import backup as bk
 
 APP_VERSION = os.getenv("APP_VERSION", "dev").lstrip("v")
-PLEX_MOUNT = os.getenv("PLEX_MOUNT", "")
-DISPATCHARR_URL = os.getenv("DISPATCHARR_URL", "")  # rewrite host:port in .strm URLs
 MOVIES_DEST = "/vod/dest/Movies"
 SERIES_DEST = "/vod/dest/Series"
 
@@ -67,13 +65,6 @@ async def lifespan(app: FastAPI):
         scanner.start_scan("movie", full=True, on_complete=_refresh_linked_files)
     elif series_count == 0:
         scanner.start_scan("series", full=True, on_complete=_refresh_linked_files)
-    if PLEX_MOUNT:
-        import atexit
-        import subprocess
-        import threading
-        import plex_fs
-        atexit.register(lambda: subprocess.run(["fusermount", "-u", PLEX_MOUNT], capture_output=True))
-        threading.Thread(target=plex_fs.mount, args=(PLEX_MOUNT,), daemon=True).start()
     yield
 
 
@@ -103,15 +94,6 @@ def _linked_dir_names(media_type: str) -> list[str]:
         return []
 
 
-def _rewrite_dispatcharr_url(url: str) -> str:
-    """Replace host:port in a Dispatcharr URL if DISPATCHARR_URL env var is set."""
-    if not DISPATCHARR_URL or not url:
-        return url
-    src = urllib.parse.urlparse(url)
-    dst = urllib.parse.urlparse(DISPATCHARR_URL)
-    return urllib.parse.urlunparse(src._replace(scheme=dst.scheme, netloc=dst.netloc))
-
-
 def _find_strm_url(src_dir: str) -> str | None:
     """Read the Dispatcharr URL from the .strm file in the source directory."""
     try:
@@ -119,7 +101,7 @@ def _find_strm_url(src_dir: str) -> str | None:
             if f.endswith(".strm"):
                 content = open(os.path.join(src_dir, f)).read().strip()
                 if content.startswith("http"):
-                    return _rewrite_dispatcharr_url(content)
+                    return content
     except OSError:
         pass
     return None
@@ -183,16 +165,10 @@ async def _do_proxy(request: Request, dispatcharr_url: str, cache_key: str):
                 landed = str(resp.url)
                 if landed != dispatcharr_url:
                     _session_cache[cache_key] = (landed, now + _SESSION_TTL)
-            probe_status = resp.status_code
             probe_headers = dict(resp.headers)
             await resp.aclose()
         finally:
             await client.aclose()
-
-        # Stale cached session → retry once with a fresh probe.
-        if probe_status not in (200, 206) and session_url is not None:
-            _session_cache.pop(cache_key, None)
-            return await _do_proxy(request, dispatcharr_url, cache_key)
 
         headers: dict[str, str] = {}
         for h in ("content-type", "accept-ranges", "last-modified", "etag"):
@@ -216,12 +192,10 @@ async def _do_proxy(request: Request, dispatcharr_url: str, cache_key: str):
                 _session_cache[cache_key] = (landed, now + _SESSION_TTL)
 
         if resp.status_code not in (200, 206):
+            if session_url is not None:
+                _session_cache.pop(cache_key, None)
             await resp.aclose()
             await client.aclose()
-            if session_url is not None:
-                # Cached session URL expired — retry once with a fresh probe.
-                _session_cache.pop(cache_key, None)
-                return await _do_proxy(request, dispatcharr_url, cache_key)
             raise HTTPException(resp.status_code, "Upstream error")
 
         resp_headers = {k: v for k, v in resp.headers.items()
@@ -252,7 +226,7 @@ async def stream_series_episode(tmdb_id: str, file_path: str, request: Request):
     try:
         content = open(strm_path).read().strip()
         if content.startswith("http"):
-            dispatcharr_url = _rewrite_dispatcharr_url(content)
+            dispatcharr_url = content
     except OSError:
         pass
     if not dispatcharr_url:

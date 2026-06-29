@@ -7,15 +7,12 @@ services:
       context: .
       args:
         - VERSION=${VODLINK_VERSION:-dev}
-        - PUID=${PUID:-1000}
-        - PGID=${PGID:-1000}
     container_name: vodlink
     user: "${PUID:-1000}:${PGID:-1000}"
     ports:
       - "${VODLINK_PORT:-7842}:8000"
     environment:
       - TZ=${TZ:-UTC}
-      - DISPATCHARR_URL=${DISPATCHARR_URL:-}
     volumes:
       - ${VOD_SRC}:/vod/src:ro
       - ${VOD_DEST}:/vod/dest:rw

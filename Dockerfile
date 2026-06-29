@@ -7,12 +7,6 @@ RUN npm run build
 
 FROM python:3.12-slim
 WORKDIR /app
-ARG PUID=1000
-ARG PGID=1000
-RUN apt-get update && apt-get install -y fuse libfuse2 && rm -rf /var/lib/apt/lists/* \
-    && echo "user_allow_other" >> /etc/fuse.conf \
-    && groupadd -g ${PGID} vodlink 2>/dev/null || true \
-    && useradd -u ${PUID} -g ${PGID} -s /sbin/nologin -M vodlink 2>/dev/null || true
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY backend/ .
