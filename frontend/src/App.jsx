@@ -6,6 +6,7 @@ import ScanStatus from './components/ScanStatus'
 import SyncModal from './components/SyncModal'
 import ScheduleModal from './components/ScheduleModal'
 import BackupModal from './components/BackupModal'
+import ConnectionModal from './components/ConnectionModal'
 import { useTheme } from './hooks/useTheme'
 
 function ThemeIcon({ theme }) {
@@ -35,6 +36,7 @@ export default function App() {
   const [syncOpen, setSyncOpen] = useState(false)
   const [scheduleOpen, setScheduleOpen] = useState(false)
   const [backupsOpen, setBackupsOpen] = useState(false)
+  const [connectionOpen, setConnectionOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [page, setPage] = useState(1)
   const [linkedOnly, setLinkedOnly] = useState(false)
@@ -143,6 +145,7 @@ export default function App() {
               onSyncCheck={() => setSyncOpen(true)}
               onSchedule={() => setScheduleOpen(true)}
               onBackups={() => setBackupsOpen(true)}
+              onConnectionSettings={() => setConnectionOpen(true)}
             />
           )}
         </div>
@@ -224,6 +227,7 @@ export default function App() {
       {syncOpen && <SyncModal onClose={() => setSyncOpen(false)} onFixed={() => fetchResults(tab, query, page, linkedOnly, genre, sortBy, sortDir)} />}
       {scheduleOpen && <ScheduleModal onClose={() => setScheduleOpen(false)} />}
       {backupsOpen && <BackupModal onClose={() => setBackupsOpen(false)} />}
+      {connectionOpen && <ConnectionModal onClose={() => setConnectionOpen(false)} />}
     </div>
   )
 }

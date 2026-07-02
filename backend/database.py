@@ -3,6 +3,13 @@ import os
 
 DB_PATH = os.getenv("DB_PATH", "/app/data/vodlink.db")
 
+CREATE_SETTINGS = """
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+)
+"""
+
 CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS media (
     id INTEGER PRIMARY KEY,
@@ -34,8 +41,25 @@ def get_conn():
 
 def init_db():
     with get_conn() as conn:
+        conn.execute(CREATE_SETTINGS)
         conn.execute(CREATE_TABLE)
         conn.execute(CREATE_INDEX)
+        conn.commit()
+
+
+def get_setting(key: str, default: str = "") -> str:
+    with get_conn() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+    return row[0] if row else default
+
+
+def set_setting(key: str, value: str) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO settings(key,value) VALUES(?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value),
+        )
         conn.commit()
 
 

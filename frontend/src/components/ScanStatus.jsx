@@ -12,7 +12,7 @@ function fmt(ts) {
   return new Date(ts * 1000).toLocaleString()
 }
 
-export default function ScanStatus({ status, version, onScan, onSyncCheck, onSchedule, onBackups }) {
+export default function ScanStatus({ status, version, onScan, onSyncCheck, onSchedule, onBackups, onConnectionSettings }) {
   const [open, setOpen] = useState(false)
 
   return (
@@ -68,6 +68,10 @@ export default function ScanStatus({ status, version, onScan, onSyncCheck, onSch
                 <button onClick={() => { onBackups(); setOpen(false) }}
                   className="w-full text-left px-3 py-2 text-sm text-blue-500 dark:text-blue-400 hover:bg-elevated rounded transition-colors">
                   Backups
+                </button>
+                <button onClick={() => { onConnectionSettings(); setOpen(false) }}
+                  className="w-full text-left px-3 py-2 text-sm text-blue-500 dark:text-blue-400 hover:bg-elevated rounded transition-colors">
+                  Dispatcharr Link
                 </button>
               </div>
             </div>

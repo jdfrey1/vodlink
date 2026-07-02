@@ -14,6 +14,7 @@ services:
     environment:
       - TZ=${TZ:-UTC}
       - VODLINK_BASE_URL=${VODLINK_BASE_URL:-}
+      - DISPATCHARR_URL=${DISPATCHARR_URL:-}
     volumes:
       - ${VOD_SRC}:/vod/src:ro
       - ${VOD_DEST}:/vod/dest:rw
